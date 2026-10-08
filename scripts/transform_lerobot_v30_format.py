@@ -49,7 +49,7 @@ CAMERA_CANDIDATES = {
 
 
 # ============================================================
-# Fast community-recommended v3.0 config
+# Published v3.0 config: AV1 (libsvtav1), streaming, CRF 18
 # ============================================================
 
 @dataclasses.dataclass(frozen=True)
@@ -69,10 +69,16 @@ class DatasetConfig:
     # instead of relying on LeRobot's internal default of 30.
     streaming_encoding: bool = True
 
+    # libsvtav1: CRF. h264_nvenc: LeRobot 0.4.4 maps this to constqp qp.
     video_crf: int | None = 18
 
-    # pyav is the fastest & most stable in community
-    video_backend: str | None = "h264_nvenc"
+    # Decoder. None keeps LeRobot's default decoder. It does not select the encoder.
+    video_backend: str | None = None
+
+    # Encoder.
+    # libsvtav1: AV1, CRF 18, preset 12, g=2, yuv420p.
+    # h264_nvenc: NVIDIA H.264, rc=constqp, qp=18, yuv420p. Not video_backend.
+    vcodec: Literal["libsvtav1", "h264_nvenc"] = "libsvtav1"
 
 
 DEFAULT_DATASET_CONFIG = DatasetConfig()
@@ -615,6 +621,7 @@ def create_empty_dataset(
 
         streaming_encoding=dataset_config.streaming_encoding,
         video_backend=dataset_config.video_backend,
+        vcodec=dataset_config.vcodec,
     )
 
 

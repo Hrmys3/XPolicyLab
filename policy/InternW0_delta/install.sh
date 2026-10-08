@@ -4,6 +4,7 @@ set -euo pipefail
 ENV_NAME="${1:-internw0-delta}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 XPL_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+UPSTREAM_ROOT="${INTERNW0_DELTA_ROOT:-${SCRIPT_DIR}/InternW0-Delta}"
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda create -n "${ENV_NAME}" python=3.11 -y
@@ -23,7 +24,13 @@ python -m pip install \
   "ftfy==6.3.1" \
   "flash-linear-attention==0.5.1" \
   "causal-conv1d==1.6.2.post1"
-python -m pip install -e "${SCRIPT_DIR}/wam_runtime"
+if [[ -f "${UPSTREAM_ROOT}/pyproject.toml" && -d "${UPSTREAM_ROOT}/src/wam/datasets" ]]; then
+  python -m pip install -e "${UPSTREAM_ROOT}[train,modelscope]"
+else
+  echo "Full InternW0-Delta source not found at ${UPSTREAM_ROOT}; installing eval-only runtime."
+  echo "Clone https://github.com/InternRobotics/InternW0-Delta there, or set INTERNW0_DELTA_ROOT before running install.sh to enable train/process_data wrappers."
+  python -m pip install -e "${SCRIPT_DIR}/wam_runtime"
+fi
 python -m pip install -e "${XPL_ROOT}"
 
 echo "Installed policy environment: ${ENV_NAME}"
