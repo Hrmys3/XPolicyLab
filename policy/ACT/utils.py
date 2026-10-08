@@ -30,7 +30,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
         episode_id = self.episode_ids[index]
         dataset_path = os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5")
         with h5py.File(dataset_path, "r") as root:
-            is_sim = None
+            is_sim = bool(root.attrs.get("sim", False))
             original_action_shape = root["/action"].shape
             episode_len = original_action_shape[0]
             if sample_full_episode:
@@ -79,10 +79,10 @@ class EpisodicDataset(torch.utils.data.Dataset):
         return image_data, qpos_data, action_data, is_pad
 
 
-def get_norm_stats(dataset_dir, num_episodes):
+def get_norm_stats(dataset_dir, episode_ids):
     all_qpos_data = []
     all_action_data = []
-    for episode_idx in range(num_episodes):
+    for episode_idx in episode_ids:
         dataset_path = os.path.join(dataset_dir, f"episode_{episode_idx}.hdf5")
         with h5py.File(dataset_path, "r") as root:
             qpos = root["/observations/qpos"][()]  # Assuming this is a numpy array
@@ -144,8 +144,14 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     train_indices = shuffled_indices[:int(train_ratio * num_episodes)]
     val_indices = shuffled_indices[int(train_ratio * num_episodes):]
 
-    # obtain normalization stats for qpos and action
-    norm_stats, max_action_len = get_norm_stats(dataset_dir, num_episodes)
+    # Validation trajectories must not influence training normalization.
+    norm_stats, _ = get_norm_stats(dataset_dir, train_indices)
+    # Padding must still accommodate the longest validation trajectory.
+    max_action_len = 0
+    for episode_idx in range(num_episodes):
+        dataset_path = os.path.join(dataset_dir, f"episode_{episode_idx}.hdf5")
+        with h5py.File(dataset_path, "r") as root:
+            max_action_len = max(max_action_len, root["/action"].shape[0])
 
     # construct dataset and dataloader
     train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, max_action_len)
@@ -167,7 +173,7 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
         prefetch_factor=1,
     )
 
-    return train_dataloader, val_dataloader, norm_stats, train_dataset.is_sim
+    return train_dataloader, val_dataloader, norm_stats, train_dataset.is_sim, train_indices, val_indices
 
 
 ### env utils

@@ -116,6 +116,7 @@ def get_args_parser():
     parser.add_argument("--ckpt_setting", action="store", type=str, help="chunk_size", required=False)
     parser.add_argument("--temporal_agg", action="store_true")
     parser.add_argument("--save_freq", action="store", type=int, help="save ckpt frequency", required=False, default=6000)
+    parser.add_argument("--init_ckpt", type=str, default=None, help="Initialize model weights from a checkpoint")
 
     return parser
 

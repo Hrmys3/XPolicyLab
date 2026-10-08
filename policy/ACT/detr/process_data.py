@@ -55,6 +55,8 @@ def data_transform(path, episode_num, load_data_dir, save_dir, robot_action_dim_
         hdf5path = os.path.join(save_dir, f"episode_{current_episode}.hdf5")
 
         with h5py.File(hdf5path, "w") as f:
+            # RoboTwin stores observation[t] with the command for the next state.
+            f.attrs["sim"] = True
             f.create_dataset("action", data=np.array(actions, dtype=np.float32))
             obs = f.create_group("observations")
             obs.create_dataset("qpos", data=np.array(qpos, dtype=np.float32))

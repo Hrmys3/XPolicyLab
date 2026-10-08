@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import pickle
 import argparse
+import json
 
 import matplotlib
 
@@ -90,18 +91,35 @@ def main(args):
         "seed": args["seed"],
         "temporal_agg": args["temporal_agg"],
         "camera_names": camera_names,
-        "save_freq": args['save_freq']
+        "save_freq": args['save_freq'],
+        "init_ckpt": args.get("init_ckpt"),
     }
 
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train,
-                                                           batch_size_val)
+    train_dataloader, val_dataloader, stats, _, train_indices, val_indices = load_data(
+        dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val
+    )
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
         os.makedirs(ckpt_dir)
+    with open(os.path.join(ckpt_dir, "policy_config.json"), "w", encoding="utf-8") as f:
+        json.dump({"chunk_size": args["chunk_size"], "hidden_dim": args["hidden_dim"],
+                   "dim_feedforward": args["dim_feedforward"], "kl_weight": args["kl_weight"],
+                   "camera_names": camera_names}, f, indent=2)
     stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
     with open(stats_path, "wb") as f:
         pickle.dump(stats, f)
+    with open(os.path.join(ckpt_dir, "dataset_split.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "split_seed": 1,
+                "train_episode_ids": train_indices.tolist(),
+                "val_episode_ids": val_indices.tolist(),
+                "init_ckpt": args.get("init_ckpt"),
+            },
+            f,
+            indent=2,
+        )
     best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
@@ -161,60 +179,59 @@ def train_bc(train_dataloader, val_dataloader, config):
     set_seed(seed)
 
     policy = make_policy(policy_class, policy_config)
+    if config["init_ckpt"]:
+        policy.load_state_dict(torch.load(config["init_ckpt"], map_location="cpu", weights_only=True))
+        print(f"Initialized policy weights from {config['init_ckpt']} (optimizer starts fresh)")
     policy.cuda()
     optimizer = make_optimizer(policy_class, policy)
 
-    train_history = []
-    validation_history = []
     min_val_loss = np.inf
     best_ckpt_info = None
+    metrics_path = os.path.join(ckpt_dir, "metrics.jsonl")
 
-    for epoch in tqdm(range(num_epochs)):
-        # validation
-        with torch.inference_mode():
-            policy.eval()
-            epoch_dicts = []
-            for batch_idx, data in enumerate(val_dataloader):
+    progress = tqdm(range(num_epochs))
+    with open(metrics_path, "w", encoding="utf-8") as metrics_file:
+        for epoch in progress:
+            policy.train()
+            train_batches = []
+            for data in train_dataloader:
+                optimizer.zero_grad()
                 forward_dict = forward_pass(data, policy)
-                epoch_dicts.append(forward_dict)
-            epoch_summary = compute_dict_mean(epoch_dicts)
-            validation_history.append(epoch_summary)
+                loss = forward_dict["loss"]
+                loss.backward()
+                optimizer.step()
+                train_batches.append(detach_dict(forward_dict))
+            train_summary = compute_dict_mean(train_batches)
 
-            epoch_val_loss = epoch_summary["loss"]
+            with torch.inference_mode():
+                policy.eval()
+                val_batches = []
+                for data in val_dataloader:
+                    forward_dict = forward_pass(data, policy)
+                    val_batches.append(forward_dict)
+                val_summary = compute_dict_mean(val_batches)
+
+            epoch_val_loss = float(val_summary["loss"].item())
             if epoch_val_loss < min_val_loss:
                 min_val_loss = epoch_val_loss
-                best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
-        summary_string = ""
-        for k, v in epoch_summary.items():
-            summary_string += f"{k}: {v.item():.3f} "
+                best_ckpt_info = (epoch + 1, min_val_loss, deepcopy(policy.state_dict()))
 
-        # training
-        policy.train()
-        optimizer.zero_grad()
-        for batch_idx, data in enumerate(train_dataloader):
-            forward_dict = forward_pass(data, policy)
-            # backward
-            loss = forward_dict["loss"]
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            train_history.append(detach_dict(forward_dict))
-        epoch_summary = compute_dict_mean(train_history[(batch_idx + 1) * epoch:(batch_idx + 1) * (epoch + 1)])
-        summary_string = ""
-        for k, v in epoch_summary.items():
-            summary_string += f"{k}: {v.item():.3f} "
+            metrics = {"epoch": epoch + 1}
+            metrics.update({f"train_{key}": float(value.item()) for key, value in train_summary.items()})
+            metrics.update({f"val_{key}": float(value.item()) for key, value in val_summary.items()})
+            metrics_file.write(json.dumps(metrics) + "\n")
+            metrics_file.flush()
+            progress.set_postfix(train=f"{metrics['train_loss']:.3f}", val=f"{epoch_val_loss:.3f}")
 
-        if (epoch + 1) % config['save_freq'] == 0:
-            ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch + 1}_seed_{seed}.ckpt")
-            torch.save(policy.state_dict(), ckpt_path)
+            if (epoch + 1) % config['save_freq'] == 0:
+                ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch + 1}_seed_{seed}.ckpt")
+                torch.save(policy.state_dict(), ckpt_path)
 
     ckpt_path = os.path.join(ckpt_dir, f"policy_last.ckpt")
     torch.save(policy.state_dict(), ckpt_path)
-
-    # best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-    # ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{best_epoch}_seed_{seed}.ckpt")
-    # torch.save(best_state_dict, ckpt_path)
-    # print(f"Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}")
+    best_epoch, _, best_state_dict = best_ckpt_info
+    torch.save(best_state_dict, os.path.join(ckpt_dir, "policy_best.ckpt"))
+    print(f"Best validation loss: {min_val_loss:.6f} at epoch {best_epoch}")
 
     return best_ckpt_info
 
@@ -245,6 +262,7 @@ if __name__ == "__main__":
     parser.add_argument("--chunk_size", action="store", type=int, help="chunk_size", required=False)
     parser.add_argument("--hidden_dim", action="store", type=int, help="hidden_dim", required=False)
     parser.add_argument("--save_freq", action="store", type=int, help="save ckpt frequency", required=False, default=6000)
+    parser.add_argument("--init_ckpt", type=str, default=None, help="Initialize model weights from a checkpoint; optimizer starts fresh")
     parser.add_argument(
         "--dim_feedforward",
         action="store",

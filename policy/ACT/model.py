@@ -7,6 +7,7 @@ from argparse import Namespace
 from XPolicyLab.model_template import ModelTemplate
 from XPolicyLab.utils.process_data import pack_robot_state, unpack_robot_state, get_robot_action_dim_info
 import os
+import json
 
 class Model(ModelTemplate):
 
@@ -25,6 +26,14 @@ class Model(ModelTemplate):
             # ckpt_name is the full run directory name under checkpoints/.
             model_cfg['ckpt_dir'] = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)), 'checkpoints', str(model_cfg['ckpt_name']))
+        run_config_path = os.path.join(model_cfg['ckpt_dir'], 'policy_config.json')
+        if os.path.isfile(run_config_path):
+            with open(run_config_path, 'r', encoding='utf-8') as f:
+                run_config = json.load(f)
+            for key in ('chunk_size', 'hidden_dim', 'dim_feedforward', 'kl_weight', 'camera_names'):
+                if key in run_config:
+                    model_cfg[key] = run_config[key]
+        self.camera_names = model_cfg.get('camera_names', [])
         return ACT(model_cfg, Namespace(**model_cfg))
 
     def update_obs(self, obs):
